@@ -1,7 +1,7 @@
 # main.py
 import os
 import tempfile
-import requests
+import re
 import streamlit as st
 from audio_recorder_streamlit import audio_recorder
 from gtts import gTTS
@@ -10,8 +10,6 @@ import speech_recognition as sr
 
 # Load environment
 load_dotenv()
-
-HF_API_TOKEN = os.getenv("HF_API_TOKEN")  # optional; set on the host if you want AI fallback (NOT required)
 
 # Exact, authoritative responses for the 5 questions + resume summary
 RESPONSES = {
@@ -42,25 +40,6 @@ def transcribe_file(path):
     except Exception:
         return ""
 
-def hf_fallback_prompt(text):
-    if not HF_API_TOKEN:
-        return ""
-    # small, simple HF inference call; used only for non-matching queries
-    API_URL = "https://api-inference.huggingface.co/models/gpt2"  # optional; host must set HF_API_TOKEN if desired
-    headers = {"Authorization": f"Bearer {HF_API_TOKEN}"}
-    payload = {"inputs": text, "parameters": {"max_new_tokens": 150}}
-    try:
-        resp = requests.post(API_URL, headers=headers, json=payload, timeout=30)
-        if resp.status_code == 200:
-            data = resp.json()
-            if isinstance(data, list) and data and "generated_text" in data[0]:
-                return data[0]["generated_text"]
-            if isinstance(data, dict) and "error" in data:
-                return ""
-        return ""
-    except Exception:
-        return ""
-
 if audio_bytes:
     with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as f:
         f.write(audio_bytes)
@@ -75,26 +54,25 @@ if audio_bytes:
         st.info(f"Question: {user_text}")
         q = user_text.lower()
 
-        # direct keyword mapping for exact 5 questions + about me
+        # Advanced Regex conditional rule mapping
         chosen = None
         mapping = {
-            "life story": ["life story", "about your life", "about you", "who are you"],
-            "superpower": ["superpower", "number one", "#1 superpower", "best skill"],
-            "grow": ["top 3", "areas you'd like to grow", "areas to grow", "grow in", "top 3 areas"],
-            "misconception": ["misconception", "coworkers", "what do coworkers", "what do your coworkers"],
-            "boundaries": ["push your boundaries", "push boundaries", "limits", "how do you push"],
-            "about me": ["about me", "resume", "linkedin", "summary"]
+            "life story": r"\b(life\s*story|about\s*your\s*life|about\s*you|who\s*are\s*you)\b",
+            "superpower": r"\b(superpower|number\s*one|best\s*skill|strongest)\b",
+            "grow": r"\b(top\s*3|areas?(?:.*)(?:grow|improve)|grow(ing)?\s*in|weakness)\b",
+            "misconception": r"\b(misconception|coworkers?|colleagues?|assume)\b",
+            "boundaries": r"\b(push(?:ing)?.*?boundaries|limits|comfort\s*zone)\b",
+            "about me": r"\b(about\s*me|resume|linkedin|summary)\b"
         }
-        for key, kws in mapping.items():
-            if any(kw in q for kw in kws):
+        
+        for key, pattern in mapping.items():
+            if re.search(pattern, q):
                 chosen = RESPONSES[key]
                 break
 
-        # If not matched, try HF fallback (optional) or generic reply
+        # Strictly secure local fallback without API leakage
         if not chosen:
-            chosen = hf_fallback_prompt(user_text)
-            if not chosen:
-                chosen = "I can answer: life story, superpower, top 3 areas to grow, coworker misconception, how I push boundaries, or 'about me' for resume. Ask one of those."
+            chosen = "Sorry, for complete data security, I am strictly programmed to answer specific profile questions locally. You can ask me about my life story, my superpower, areas I want to grow in, coworker misconceptions, how I push boundaries, or ask for a resume summary."
 
         st.success(f"Answer: {chosen}")
 
