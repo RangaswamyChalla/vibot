@@ -67,11 +67,16 @@ class AsyncQueue:
         for job_id in to_remove:
             del self._jobs[job_id]
 
-        if to_remove:
-            logger.info(f"Purged {len(to_remove)} old jobs from queue")
+        dl_initial = len(self._dead_letter)
+        while self._dead_letter and self._dead_letter[0].completed_at and self._dead_letter[0].completed_at < cutoff:
+            self._dead_letter.popleft()
+        dl_purged = dl_initial - len(self._dead_letter)
+
+        if to_remove or dl_purged > 0:
+            logger.info(f"Purged {len(to_remove)} old jobs from queue, {dl_purged} from dead-letter")
 
         self._last_purge_at = time.time()
-        return len(to_remove)
+        return len(to_remove) + dl_purged
 
     async def enqueue(self, job_id: str, data: Any, metadata: dict = None) -> Job:
         """Add a job to the queue."""
