@@ -23,6 +23,29 @@ app = FastAPI(
     description="Production-grade voice agent with local LLM, RAG, and intent classification",
 )
 
+import uuid
+from contextvars import ContextVar
+from starlette.middleware.base import BaseHTTPMiddleware
+from fastapi import Request
+
+request_id: ContextVar[str] = ContextVar("request_id", default="")
+
+class RequestIdMiddleware(BaseHTTPMiddleware):
+    async def dispatch(self, request: Request, call_next):
+        req_id = request.headers.get("X-Request-Id", str(uuid.uuid4()))
+        request_id.set(req_id)
+        
+        logger.info(f"[{req_id}] Request Initiated: {request.url.path}")
+        try:
+            response = await call_next(request)
+            response.headers["X-Request-Id"] = req_id
+            return response
+        except Exception as e:
+            logger.error(f"[{req_id}] Request Failed: {e}")
+            raise e
+
+app.add_middleware(RequestIdMiddleware)
+
 # Build allowed origins list from config; empty string disables CORS entirely
 _origins = [o.strip() for o in config.CORS_ALLOWED_ORIGINS.split(",") if o.strip()]
 if _origins:

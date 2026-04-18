@@ -23,6 +23,7 @@ from services.storage_service import StorageService
 from observability import get_logger
 
 logger = get_logger("api.voice")
+tts_lock = asyncio.Lock()  # Phase 2 global lock for Piper rendering
 
 router = APIRouter()
 
@@ -74,7 +75,12 @@ async def websocket_endpoint(websocket: WebSocket, token: Optional[str] = None):
 
     try:
         while True:
-            message = await websocket.receive()
+            try:
+                # 30-Second timeout enables heartbeat trigger to prevent silent dropping
+                message = await asyncio.wait_for(websocket.receive(), timeout=30.0)
+            except asyncio.TimeoutError:
+                await connection.send_json({"type": "ping"})
+                continue
 
             if message["type"] == "websocket.disconnect":
                 break
@@ -121,9 +127,17 @@ async def websocket_endpoint(websocket: WebSocket, token: Optional[str] = None):
         logger.info(f"WebSocket disconnected: {connection.connection_id}")
     except Exception as e:
         logger.error(f"WebSocket error: {e}")
-        await connection.send_json({"type": "error", "message": str(e)})
+        try:
+            await connection.send_json({"type": "error", "message": "Internal processing error."})
+        except Exception: pass
+        
+        if websocket.client_state == WebSocketState.CONNECTED:
+            await websocket.close(code=1011) # Graceful application fail code
     finally:
-        await connection.close()
+        try:
+            if websocket.client_state == WebSocketState.CONNECTED:
+                await connection.close()
+        except: pass
         logger.info(f"Voice WebSocket closed: {connection.connection_id}")
 
 
@@ -217,11 +231,12 @@ async def handle_finalize(connection: VoiceConnection, data: dict):
                         to_synthesize = sentence_buffer.strip()
                         if to_synthesize:
                             try:
-                                # Run TTS in background for this sentence
-                                audio_data = await asyncio.wait_for(
-                                    asyncio.get_event_loop().run_in_executor(None, tts.synthesize, to_synthesize),
-                                    timeout=10.0
-                                )
+                                # Run TTS in background for this sentence sequentially
+                                async with tts_lock:
+                                    audio_data = await asyncio.wait_for(
+                                        asyncio.get_event_loop().run_in_executor(None, tts.synthesize, to_synthesize),
+                                        timeout=10.0
+                                    )
                                 if audio_data:
                                     audio_b64 = base64.b64encode(audio_data).decode()
                                     await connection.send_json({
@@ -237,10 +252,11 @@ async def handle_finalize(connection: VoiceConnection, data: dict):
                 if sentence_buffer.strip():
                     to_synthesize = sentence_buffer.strip()
                     try:
-                        audio_data = await asyncio.wait_for(
-                            asyncio.get_event_loop().run_in_executor(None, tts.synthesize, to_synthesize),
-                            timeout=5.0
-                        )
+                        async with tts_lock:
+                            audio_data = await asyncio.wait_for(
+                                asyncio.get_event_loop().run_in_executor(None, tts.synthesize, to_synthesize),
+                                timeout=5.0
+                            )
                         if audio_data:
                             audio_b64 = base64.b64encode(audio_data).decode()
                             await connection.send_json({

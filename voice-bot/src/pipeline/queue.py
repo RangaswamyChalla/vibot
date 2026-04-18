@@ -176,28 +176,41 @@ class AsyncQueue:
         jobs = list(self._dead_letter)
         return sorted(jobs, key=lambda j: j.completed_at or 0, reverse=True)[:limit]
 
-    async def retry_dead_letter_job(self, job_id: str) -> bool:
-        """Re-enqueue a dead-lettered job for reprocessing. Returns True if found and re-enqueued."""
+    async def retry_dead_letter_job(self, job_id: str, max_retries: int = 3) -> bool:
+        """Re-enqueue a dead-lettered job for reprocessing with exponential backoff. Returns True if found and re-enqueued."""
         async with self._lock:
             job = None
             for j in self._dead_letter:
                 if j.id == job_id:
                     job = j
-                    self._dead_letter.remove(j)
                     break
             if not job:
                 return False
 
+            attempt = job.metadata.get("retries", 0)
+            if attempt >= max_retries:
+                logger.error(f"Job {job_id} permanently failed (max retries reached).")
+                return False
+
+            self._dead_letter.remove(job)
+
+        import random
+        # Execute delay outside lock
+        delay = (2 ** attempt) + random.uniform(0, 1)
+        await asyncio.sleep(delay)
+
+        async with self._lock:
             # Reset job state
             job.status = JobStatus.PENDING
             job.error = None
             job.completed_at = None
             job.result = None
             job.created_at = time.time()
+            job.metadata["retries"] = attempt + 1
 
             self._jobs[job_id] = job
             self._pending.put_nowait(job_id)
-            logger.info(f"Job {job_id} re-enqueued from dead-letter queue")
+            logger.info(f"Job {job_id} re-enqueued from dead-letter queue (attempt {attempt+1})")
             await self._persist_state()
             return True
 
