@@ -1,0 +1,29 @@
+services:
+  api:
+    build: .
+    ports:
+      - "8000:8000"
+    environment:
+      - OLLAMA_BASE_URL=http://host.docker.internal:11434
+      - USE_LEGACY_OPENAI=false
+      - LOG_LEVEL=INFO
+      - QUEUE_SIZE=100
+      - MAX_TOKEN_BUDGET=4096
+      - VOICEBOT_API_KEY=${VOICEBOT_API_KEY:-axiom-dev-key}
+    volumes:
+      - ./data:/app/voice-bot/data
+      - ./conversations:/app/voice-bot/conversations
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    restart: unless-stopped
+
+  streamlit:
+    build: .
+    command: streamlit run voice-bot/chatbotfunction.py --server.port 8501
+    ports:
+      - "8501:8501"
+    environment:
+      - API_URL=http://api:8000
+    depends_on:
+      - api
+    restart: unless-stopped
