@@ -64,18 +64,18 @@ class ChatService:
             messages.extend(context)
         messages.append({"role": "user", "content": user_input})
 
-        # Default strategy: Local AXIOM (Ollama) first, OpenAI as fallback
+        # AXIOM LOCAL-ONLY: Use Ollama exclusively — no external API calls
         try:
             from core.ollama_client import get_ollama_client, ChatMessage
             import asyncio
-            
+
             def _force_sync(coro):
                 try:
                     loop = asyncio.get_event_loop()
                 except RuntimeError:
                     loop = asyncio.new_event_loop()
                     asyncio.set_event_loop(loop)
-                
+
                 if loop.is_running():
                     import concurrent.futures
                     with concurrent.futures.ThreadPoolExecutor() as executor:
@@ -84,40 +84,19 @@ class ChatService:
                     return loop.run_until_complete(coro)
 
             client = get_ollama_client()
-            # Try Ollama directly
             ollama_context = [ChatMessage(role=m["role"], content=m["content"]) for m in (context or [])]
-            logger.info("Attempting AXIOM (Ollama) chat...")
-            ollama_resp = _force_sync(client.chat(message=user_input, context=ollama_context))
-            logger.info(f"AXIOM response: {ollama_resp.message[:50]}...")
+            logger.info("Routing to AXIOM (Ollama) — local inference only...")
+            ollama_resp = _force_sync(client.chat(message=user_input, context=ollama_context, timeout=120.0))
+            logger.info(f"AXIOM response received: {ollama_resp.message[:50]}...")
             return ollama_resp.message
 
         except Exception as ollama_err:
-            logger.warning(f"AXIOM (Ollama) failed: {ollama_err}. Checking OpenAI fallback...")
-            
-            # 1. Try OpenAI Fallback (only if NOT blocked by quota)
-            try:
-                # Basic check for API key presence
-                if not self.client.api_key:
-                    raise ValueError("OpenAI API key missing")
+            logger.warning(f"AXIOM (Ollama) failed: {ollama_err}. Using local keyword fallback only.")
 
-                response = self.client.chat.completions.create(
-                    model="gpt-3.5-turbo",
-                    messages=messages
-                )
-                reply = response.choices[0].message.content
-                logger.info(f"OpenAI fallback successful: {reply[:50]}...")
-                return reply
-            except Exception as openai_err:
-                # ROOT CAUSE CAPTURE: If quota is reached, don't crash, just use keywords
-                if "insufficient_quota" in str(openai_err) or "429" in str(openai_err):
-                    logger.warning("OpenAI quota exceeded. Bypassing cloud fallback to local keywords.")
-                else:
-                    logger.error(f"OpenAI fallback failed: {openai_err}")
+        # Local keyword fallback — NEVER calls external APIs
+        fallback = get_fallback(user_input)
+        if fallback:
+            logger.info("Using local keyword response (offline mode)")
+            return fallback
 
-            # 2. Final Keyword Fallback (ALWAYS works offline)
-            fallback = get_fallback(user_input)
-            if fallback:
-                logger.info("Falling back to internal keyword response")
-                return fallback
-                
-            return "I'm sorry, I'm currently running in limited offline mode and couldn't process that specific request."
+        return "I'm currently running in offline mode. Please ask about my life story, superpower, areas to grow, coworker misconceptions, how I push boundaries, or about me."
